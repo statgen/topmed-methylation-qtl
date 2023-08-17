@@ -1,0 +1,42 @@
+Bootstrap: library
+From: ubuntu:22.04
+
+%files
+  #. /singularity_methy !!!DO NOTHING!!!
+
+%environment
+  export LC_ALL=C
+  export TZ=Etc/UTC
+
+%post
+  export TZ=Etc/UTC
+  export DEBIAN_FRONTEND=noninteractive
+  apt-get update && apt-get install -y \
+    automake \
+    autoconf \
+    build-essential \
+    cmake \
+    git \
+    libcurl4-openssl-dev \
+    liblzma-dev \
+    libncurses5-dev \
+    libssl-dev \
+    libzstd-dev \
+    python3 \
+    python3-cffi \
+    python3-pip \
+    python3-virtualenv \
+    r-base \
+    r-base-dev \
+    tzdata \
+    zlib1g-dev
+
+  #git clone https://github.com/broadinstitute/tensorqtl /tensorqtl-git
+  #rev=3cdaa828460a9e9eee44ee98ddfbe74f2069cf5e 
+
+  git clone https://github.com/porchard/tensorqtl /tensorqtl-git
+  rev=invnorm-after-residualization
+
+  cd /tensorqtl-git
+  git checkout $rev
+  python3 -m pip install -r install/requirements.txt .
