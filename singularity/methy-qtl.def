@@ -2,19 +2,30 @@ Bootstrap: library
 From: ubuntu:22.04
 
 %files
-  #. /singularity_methy !!!DO NOTHING!!!
+  scripts/merge-cpg-positions.sh /usr/local/bin/merge-cpg-positions.sh
+  scripts/plot-mpcs.R /usr/local/bin/plot-mpcs.R
+  scripts/process-methy-rds.R /usr/local/bin/process-methy-rds.R
+  scripts/transpose_tsv.R /usr/local/bin/transpose_tsv.R
+  scripts/generate-methy-pcs.R /usr/local/bin/generate-methy-pcs.R
 
 %environment
   export LC_ALL=C
   export TZ=Etc/UTC
 
 %post
+  chmod +x /usr/local/bin/merge-cpg-positions.sh \
+    /usr/local/bin/plot-mpcs.R \
+    /usr/local/bin/process-methy-rds.R \
+    /usr/local/bin/transpose_tsv.R \
+    /usr/local/bih/generate-methy-pcs.R
+
   export TZ=Etc/UTC
   export DEBIAN_FRONTEND=noninteractive
   apt-get update && apt-get install -y \
     automake \
     autoconf \
     build-essential \
+    bcftools \
     cmake \
     git \
     libcurl4-openssl-dev \
@@ -29,7 +40,16 @@ From: ubuntu:22.04
     r-base \
     r-base-dev \
     tzdata \
+    unzip \
+    wget \
     zlib1g-dev
+
+  Rscript -e 'install.packages("readr"); install.packages("GGally")'
+
+  mkdir /plink && cd /plink
+  wget https://s3.amazonaws.com/plink2-assets/alpha4/plink2_linux_x86_64_20230813.zip
+  unzip plink2_linux_x86_64_20230813.zip
+  install -T plink2 /usr/local/bin/plink2
 
   #git clone https://github.com/broadinstitute/tensorqtl /tensorqtl-git
   #rev=3cdaa828460a9e9eee44ee98ddfbe74f2069cf5e 
@@ -40,3 +60,5 @@ From: ubuntu:22.04
   cd /tensorqtl-git
   git checkout $rev
   python3 -m pip install -r install/requirements.txt .
+  
+  rm -r /plink/
