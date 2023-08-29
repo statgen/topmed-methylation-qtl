@@ -1,14 +1,18 @@
 import os
 import math
+import gzip
+from pathlib import Path
+
 
 configfile: "config.yml"
-#singularity: "topmed-methy.sif"
+singularity: "methy-qtl.sif"
 
 mem_step_size = 6400
 
+
 rule invnorm_betas:
     input: 
-        config["rds_file"]
+        config["betas_rds"]
     output:
         "phenotypes/betas.sorted_samples.invnorm.tsv.gz"
     threads: 1
@@ -21,38 +25,60 @@ rule invnorm_betas:
         process-methy-rds.R {input} {output}
         """
 
-rule invnorm_betas_with_positions:
+rule bed_file:
     input:
-        betas = rules.invnorm_betas.output,
-        position_map = config["cpg_pos_map"]
+        vcf = "genotypes/{chrom}.pass_variants.bcf", #config["genotype_expression"],
+        betas = config["betas_rds"],
+        array_manifest = config["array_manifest"]
     output:
-        "phenotypes/betas.sorted_samples.invnorm.ids_fixed.samples_filtered.with_positions.tsv.gz"
+        "bed_files/betas.{chrom}.bed.gz"
     threads: 1
     resources:
         mem_mb = 64000
     shell:
         """
-        set -euo pipefail
+        set +e
+        tmp_dir=`mktemp -d`
+        tmp_out=$tmp_dir/$(basename {output})
 
-        merge-cpg-positions.sh {input.betas} {input.position_map} \
-          | subset-methy.R \
-          | gzip > {output}
+        header_hash=$(zcat {input.array_manifest} | head -n1 | md5sum | cut -f1 -d' ')
+        if [[ $header_hash != "c72b2e7275bdb062c33d895b2bb68a4a" ]]; then
+          >&2 echo "Error: unexpected array manifest column names (hashes: c72b2e7275bdb062c33d895b2bb68a4a vs $header_hash)"
+          exit 1
+        fi 
+
+        set -uo pipefail
+        bcftools query -l {input.vcf} > $tmp_dir/genotype_ids.txt
+        zcat {input.array_manifest} | awk -F'\t' '$1=="{wildcards.chrom}" {{print $9}}' | sort > $tmp_dir/probe_ids.txt
+
+        ./subset_rds_to_tsv.R {input.betas} $tmp_dir/probe_ids.txt $tmp_dir/genotype_ids.txt | join -t $'\t' --header <(zcat {input.array_manifest} | awk -F'\t' 'NR=1||$1=="{wildcards.chrom}" {{b=($10==0?$2+1:$2); print $9"\t"$1"\t"b"\t"b+1"\t"$9}}' | awk -F'\t' 'NR==1 {{print $0;next}} {{print $0 | "sort -k1,1"}}') /dev/stdin | cut -f2- | awk -F'\t' -v 'OFS=\t' 'NR==1 {{ $1="#chr"; $2="start"; $3="end"; $4="probe_id"; print $0;next}} {{print $0| "sort -k2,2 --numeric-sort"}}' | bgzip > $tmp_out && tabix -p bed $tmp_out
+        rc=$?
+
+        if [[ $rc == 0 ]]; then
+          mv $tmp_out {output} &&
+          mv $tmp_out.tbi {output}.tbi
+          rc=$?
+        fi
+        
+        rm -r $tmp_dir
+        exit $rc
         """
 
-rule bed_file:
-    input:
-        rules.invnorm_betas_with_positions.output
-    output:
-        "bed_files/betas.sorted_samples.invnorm.ids_fixed.samples_filtered.{chrom}.bed.gz"
-    threads: 1
-    resources:
-        mem_mb = 6400
-    shell:
-        """
-        set -euo pipefail
-        (echo '#chr' start end probe_id $(zcat {input} | head -n1 | cut -f5-) | tr " " "\t"; zcat {input} | awk -F'\t' 'BEGIN {{OFS="\t"}} {{if ($1=="{wildcards.chrom}") {{$3=$2+1; print}}}}' | sort -k2,2 --numeric-sort) | bgzip > {output}
-        tabix {output}
-        """
+#rule bed_file_old:
+#    input:
+#        rules.invnorm_betas_with_positions.output
+#    output:
+#        "bed_files/betas.sorted_samples.invnorm.ids_fixed.samples_filtered.{chrom}.bed.gz"
+#    threads: 1
+#    resources:
+#        mem_mb = 6400
+#    shell:
+#
+#        """
+#        set -euo pipefail
+#        (echo '#chr' start end probe_id $(zcat {input} | head -n1 | cut -f5-) | tr " " "\t"; zcat {input} | awk -F'\t' 'BEGIN {{OFS="\t"}} {{if ($1=="{wildcards.chrom}") {{$3=$2+1; print}}}}' | sort -k2,2 --numeric-sort) | bgzip > {output}
+#        tabix {output}
+#        """
 
 
 rule genotype_subset:
@@ -110,7 +136,7 @@ rule null_genotype_subset:
 
 rule pcs:
     input:
-        rules.invnorm_betas_with_positions.output
+        rules.bed_file.output
     output:
         "pcs/betas.sorted_samples.invnorm.ids_fixed.samples_filtered.loadings.tsv",
         "pcs/betas.sorted_samples.invnorm.ids_fixed.samples_filtered.pcs_variance_explained.txt"
@@ -202,4 +228,81 @@ rule null_covariates:
 
         rm $tmp_dir/null_pcs.tsv 
         
+        """
+
+
+chrom_methy_file="bed_files/betas.sorted_samples.invnorm.ids_fixed.samples_filtered.{chrom}.bed.gz"
+chrom_genotype_file="genotypes/{chrom}.pass_variants.bim"
+
+
+rule permutation_scan_exclude_chunk:
+    input:
+        genotype_bim_file=chrom_genotype_file,
+        phenotype_bed_file=chrom_methy_file,
+        covariates_file="covariates/sex_gpcs_mpcs.transposed.tsv"
+    output:
+        "permute_scan/exclude/temp/permute.{chrom}.chunk_{chunk}.mpcs_{mpcs}.cis_qtl.tsv.gz"
+    threads: 16
+    resources:
+        mem_mb = lambda wc, attempt:  mem_step_size + mem_step_size * attempt
+    shell:
+        """
+        #!/bin/bash
+
+        export OMP_NUM_THREADS={threads}
+        export MKL_NUM_THREADS={threads}
+        echo "threads: {threads}"
+        env | grep THREADS
+        set +e
+        set -uo pipefail
+        tmp_dir=`mktemp -d`
+        tmp_prefix=${{tmp_dir}}/$(basename {output} .cis_qtl.tsv.gz)
+        tmp_out=${{tmp_prefix}}.cis_qtl.txt.gz
+        chunk_bed_file=${{tmp_dir}}/betas.{wildcards.chrom}.{wildcards.chunk}.bed.gz
+        cov_file="$tmp_dir/cov_file.tsv"
+        head -n $(( 12 + {wildcards.mpcs})) {input.covariates_file} > $cov_file
+
+        echo "Subsetting BED file ..." >&2
+        (zcat {input.phenotype_bed_file} | head -n1; zcat {input.phenotype_bed_file} | tail -n+2 | tail -n+$(( 1 + {wildcards.chunk} * {config[chunk_size]} )) | head -n{config[chunk_size]}) | bgzip > $chunk_bed_file
+
+        python3 -m tensorqtl $(dirname {input.genotype_bim_file})/$(basename {input.genotype_bim_file} .bim) $chunk_bed_file $tmp_prefix  --mode cis --maf_threshold 0.001 --covariates $cov_file --window 1000000 --qvalue_lambda 0 --seed 2023 --permutations 1000 --invnorm 
+        rc=$?        
+
+        if [[ $rc == 0 && {wildcards.chunk} == 0 ]]; then
+          mv $tmp_out {output}
+          rc=$?
+        elif [[ $rc == 0 ]]; then
+          echo "Removing header from output and recompressing ..." >&2
+          zcat $tmp_out | tail -n+2 | bgzip > ${{tmp_out}}.no_header && mv ${{tmp_out}}.no_header {output}
+          rc=$?
+        fi
+
+        rm -r $tmp_dir
+        exit $rc
+        """
+
+
+def num_chunks_for_chrom(input_file):
+    with gzip.open(input_file) as f:
+        n_lines = sum(1 for _ in f) - 1
+        if n_lines > 0:
+            return int(math.ceil(n_lines / config["chunk_size"]))
+    return 0;
+
+
+chrom_methy_file="bed_files/betas.sorted_samples.invnorm.ids_fixed.samples_filtered.{chrom}.bed.gz"
+chrom_genotype_file="genotypes/{chrom}.pass_variants.bim"
+
+
+rule permutation_scan_exclude:
+    input:
+        lambda wc: [rules.permutation_scan_exclude_chunk.output[0].format(chunk=c, chrom=wc.chrom, mpcs=wc.mpcs) for c in range(0, num_chunks_for_chrom(chrom_methy_file.format(chrom=wc.chrom)))]
+    output:
+        "permute_scan/exclude/permute.{chrom}.mpcs_{mpcs}.cis_qtl.tsv.gz"
+    threads: 2
+    resources:
+        mem_mb = lambda wc, attempt:  mem_step_size + mem_step_size * attempt
+    shell:
+        """
+        cat {input} > {output}
         """

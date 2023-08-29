@@ -2,22 +2,14 @@ Bootstrap: library
 From: ubuntu:22.04
 
 %files
-  scripts/merge-cpg-positions.sh /usr/local/bin/merge-cpg-positions.sh
-  scripts/plot-mpcs.R /usr/local/bin/plot-mpcs.R
-  scripts/process-methy-rds.R /usr/local/bin/process-methy-rds.R
-  scripts/transpose_tsv.R /usr/local/bin/transpose_tsv.R
-  scripts/generate-methy-pcs.R /usr/local/bin/generate-methy-pcs.R
+  scripts/ /opt/scripts/
 
 %environment
   export LC_ALL=C
   export TZ=Etc/UTC
 
 %post
-  chmod +x /usr/local/bin/merge-cpg-positions.sh \
-    /usr/local/bin/plot-mpcs.R \
-    /usr/local/bin/process-methy-rds.R \
-    /usr/local/bin/transpose_tsv.R \
-    /usr/local/bih/generate-methy-pcs.R
+  chmod +x /opt/scripts/*
 
   export TZ=Etc/UTC
   export DEBIAN_FRONTEND=noninteractive
@@ -25,13 +17,16 @@ From: ubuntu:22.04
     automake \
     autoconf \
     build-essential \
-    bcftools \
     cmake \
     git \
     libcurl4-openssl-dev \
+    libfontconfig-dev \
+    libfribidi-dev \
+    libharfbuzz-dev \
     liblzma-dev \
     libncurses5-dev \
     libssl-dev \
+    libxml2-dev \
     libzstd-dev \
     python3 \
     python3-cffi \
@@ -42,9 +37,28 @@ From: ubuntu:22.04
     tzdata \
     unzip \
     wget \
-    zlib1g-dev
+    zlib1g-dev \
+    libfreetype6-dev libpng-dev libtiff5-dev libjpeg-dev \
+    libmagick++-dev
 
-  Rscript -e 'install.packages("readr"); install.packages("GGally")'
+  Rscript --no-save /usr/local/bin/install_packages_or_die.R remotes readr GGally
+  Rscript --no-save /usr/local/bin/install_github_package_or_die.R jdstorey/qvalue qvalue
+
+  git clone https://github.com/samtools/htslib /htslib
+  cd /htslib
+  git checkout 1.13
+  git submodule update --init --recursive
+  autoreconf -i
+  ./configure
+  make
+  install bgzip /usr/local/bin
+  install tabix /usr/local/bin
+
+  git clone https://github.com/samtools/bcftools /bcftools
+  cd /bcftools
+  git checkout 1.13
+  make
+  make install
 
   mkdir /plink && cd /plink
   wget https://s3.amazonaws.com/plink2-assets/alpha4/plink2_linux_x86_64_20230813.zip
@@ -61,4 +75,4 @@ From: ubuntu:22.04
   git checkout $rev
   python3 -m pip install -r install/requirements.txt .
   
-  rm -r /plink/
+  rm -r /plink/ /bcftools/ /htslib/
