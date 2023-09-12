@@ -70,8 +70,8 @@ From: ubuntu:22.04
   #rev=3cdaa828460a9e9eee44ee98ddfbe74f2069cf5e 
 
   python3 -m pip install --upgrade pip setuptools wheel
-  git clone https://github.com/porchard/tensorqtl /tensorqtl-git
-  rev=5ea048f2705035df1cb87e59eb143a54805cadeb #invnorm-after-residualization
+  git clone https://github.com/jonathonl/tensorqtl /tensorqtl-git
+  rev=b27d8eb5e37d5a04c21340d69101c4d49f8b69d4 #invnorm-after-residualization
   cd /tensorqtl-git
   git checkout $rev
   python3 -m pip install -r install/requirements.txt .
