@@ -2,7 +2,7 @@ Bootstrap: library
 From: ubuntu:22.04
 
 %files
-  scripts/ /opt/scripts/
+  scripts /opt/scripts
 
 %environment
   export LC_ALL=C
@@ -69,9 +69,9 @@ From: ubuntu:22.04
   #git clone https://github.com/broadinstitute/tensorqtl /tensorqtl-git
   #rev=3cdaa828460a9e9eee44ee98ddfbe74f2069cf5e 
 
+  python3 -m pip install --upgrade pip setuptools wheel
   git clone https://github.com/porchard/tensorqtl /tensorqtl-git
-  rev=invnorm-after-residualization
-
+  rev=5ea048f2705035df1cb87e59eb143a54805cadeb #invnorm-after-residualization
   cd /tensorqtl-git
   git checkout $rev
   python3 -m pip install -r install/requirements.txt .
