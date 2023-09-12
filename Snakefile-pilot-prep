@@ -50,8 +50,9 @@ rule bed_file:
         set -uo pipefail
         bcftools query -l {input.vcf} > $tmp_dir/genotype_ids.txt
         zcat {input.array_manifest} | awk -F'\t' '$1=="{wildcards.chrom}" {{print $9}}' | sort > $tmp_dir/probe_ids.txt
-
-        ./subset_rds_to_tsv.R {input.betas} $tmp_dir/probe_ids.txt $tmp_dir/genotype_ids.txt | join -t $'\t' --header <(zcat {input.array_manifest} | awk -F'\t' 'NR=1||$1=="{wildcards.chrom}" {{b=($10==0?$2+1:$2); print $9"\t"$1"\t"b"\t"b+1"\t"$9}}' | awk -F'\t' 'NR==1 {{print $0;next}} {{print $0 | "sort -k1,1"}}') /dev/stdin | cut -f2- | awk -F'\t' -v 'OFS=\t' 'NR==1 {{ $1="#chr"; $2="start"; $3="end"; $4="probe_id"; print $0;next}} {{print $0| "sort -k2,2 --numeric-sort"}}' | bgzip > $tmp_out && tabix -p bed $tmp_out
+        echo $PATH
+        
+        subset_rds_to_tsv.R {input.betas} $tmp_dir/probe_ids.txt $tmp_dir/genotype_ids.txt | join -t $'\t' --header <(zcat {input.array_manifest} | awk -F'\t' 'NR=1||$1=="{wildcards.chrom}" {{b=($10==0?$2+1:$2); print $9"\t"$1"\t"b"\t"b+1"\t"$9}}' | awk -F'\t' 'NR==1 {{print $0;next}} {{print $0 | "sort -k1,1"}}') /dev/stdin | cut -f2- | awk -F'\t' -v 'OFS=\t' 'NR==1 {{ $1="#chr"; $2="start"; $3="end"; $4="probe_id"; print $0;next}} {{print $0| "sort -k2,2 --numeric-sort"}}' | bgzip > $tmp_out && tabix -p bed $tmp_out
         rc=$?
 
         if [[ $rc == 0 ]]; then
@@ -86,7 +87,7 @@ rule genotype_subset:
         vcf = config["genotype_expression"],
         id_convert_map = config["sample_id_convert_map"]
     output:
-        "genotypes/{chrom}.pass_variants.bed"
+        "genotypes/{chrom}.pass_variants.bcf"
     threads: 2
     resources:
         mem_mb = lambda wc, attempt:  mem_step_size + mem_step_size * attempt
@@ -95,7 +96,7 @@ rule genotype_subset:
         set -uo pipefail
         tmp_dir=`mktemp -d`
 
-        plink_prefix_path=${{tmp_dir}}/$(basename {output} .bed)
+        plink_prefix_path=${{tmp_dir}}/$(basename {output} .bcf)
         bcftools view -S <(cut -f1 {input.id_convert_map} | grep -v "^NA$" | grep -v "NWD359245\|NWD439884\|NWD550834\|NWD582434\|NWD609471\|NWD741494") {input.vcf} --include "FILTER='PASS'" -Ou \
           | bcftools view --include 'AC>0&&AC!=AN' -Ou \
           | bcftools annotate --set-id '%CHROM:%POS:%REF:%ALT' -Ou \
@@ -120,49 +121,111 @@ rule null_genotype_subset:
     input:
         rules.genotype_subset.output
     output:
-        "genotypes_null/{chrom}.pass_variants.null.bed"
+        "genotypes_null/{chrom}.pass_variants.null.bcf"
     threads: 2
     resources:
         mem_mb = lambda wc, attempt:  mem_step_size + mem_step_size * attempt
     shell:
         """
         set -uo pipefail
-        plink_prefix_path=$(dirname {output})/$(basename {output} .bed)
-        input_bcf=$(dirname {input})/$(basename {input} .bed).bcf
-        bcftools reheader --samples <(bcftools query -l $input_bcf | sort --random-sort) $input_bcf -o ${{plink_prefix_path}}.bcf
+        plink_prefix_path=$(dirname {output})/$(basename {output} .bcf)
+        bcftools reheader --samples <(bcftools query -l $input_bcf | sort --random-sort) {input} -o ${{plink_prefix_path}}.bcf
         bcftools index --force ${{plink_prefix_path}}.bcf
         plink2 --make-bed --output-chr chrM --bcf ${{plink_prefix_path}}.bcf --threads 4 --out $plink_prefix_path
         """
 
+
+rule vup_adjusted_bed_file:
+    input:
+        methy = rules.bed_file.output,
+        vcf = rules.genotype_subset.output,
+        array_manifest = config["array_manifest"]
+    output:
+        "bed_files/{vup_method}/betas.{chrom}.{vup_method}.bed.gz"
+    threads: 2
+    resources:
+        mem_mb = lambda wc, attempt:  mem_step_size + mem_step_size * attempt
+    shell:
+        """
+        set -uo pipefail
+        tmp_dir=`mktemp -d`
+        tmp_out=$tmp_dir/$(basename {output})
+        
+
+        method=$(echo {wildcards.vup_method} | cut -f1 -d'_') 
+        vuptool -m $method {input.methy} {input.vcf} {input.array_manifest} | bgzip > $tmp_out &&
+        tabix -p bed $tmp_out
+        rc=$?
+
+        if [[ $rc == 0 ]]; then
+          mv $tmp_out {output} && mv $tmp_out.tbi {output}.tbi
+          rc=$?
+        fi
+       
+        rm -r $tmp_dir
+        exit $rc
+        """
+
+
+rule invnorm_vup_adjusted_bed_file:
+    input:
+        rules.vup_adjusted_bed_file.output
+    output:
+        "bed_files/{vup_method}/betas.{chrom}.{vup_method}.invnorm.bed.gz"
+    threads: 2
+    resources:
+        mem_mb = lambda wc, attempt:  mem_step_size + mem_step_size * attempt
+    shell:
+        """
+        set -uo pipefail
+        tmp_dir=`mktemp -d`
+        tmp_out=$tmp_dir/$(basename {output})
+
+
+        invnorm_bed.R {input} | bgzip > $tmp_out &&
+        tabix -p bed $tmp_out
+        rc=$?
+
+        if [[ $rc == 0 ]]; then
+          mv $tmp_out {output} && mv $tmp_out.tbi {output}.tbi
+          rc=$?
+        fi
+
+        rm -r $tmp_dir
+        exit $rc
+        """
+
+
 rule pcs:
     input:
-        rules.bed_file.output
+        lambda wc: [rules.invnorm_vup_adjusted_bed_file.output[0].format(vup_method=wc.vup_method, chrom="chr"+str(c)) for c in range(1,23)]
     output:
-        "pcs/betas.sorted_samples.invnorm.ids_fixed.samples_filtered.loadings.tsv",
-        "pcs/betas.sorted_samples.invnorm.ids_fixed.samples_filtered.pcs_variance_explained.txt"
+        "pcs/{vup_method}/beta_pcs.{vup_method}.invnorm.scores.tsv",
+        "pcs/{vup_method}/beta_pcs.{vup_method}.invnorm.variance_explained.txt"
     params:
-        prefix = "pcs/betas.sorted_samples.invnorm.ids_fixed.samples_filtered"
+        prefix = "pcs/{vup_method}/beta_pcs.{vup_method}.invnorm"
     threads: 2
     resources:
         mem_mb = 64000
     shell:
         """
-        set -eu
-       
-        generate-methy-pcs.R {input} {params.prefix}
-        tmp={params.prefix}.loadings.tsv.tmp
-        (printf "sample_id\t$(head -n1 $tmp | cut -f2-)\n"; tail -n+2 $tmp) > {output[0]}
-        rm $tmp
+        set -euo pipefail
+      
+        start_line=1
+        for f in {input}; do
+          zcat $f | tail -n+$start_line
+          start_line=2
+        done | generate-methy-pcs.R {params.prefix}
         """
 
 
 rule covariates:
     input:
-        sample_sheet = "MISSING.csv",
-        geno_pcs = "MISSING.tsv",
+        extra_cov = config["extra_covariates"],
+        geno_pcs = "/net/topmed11/working/lefaivej/topmed-methylation/copd_ltrc_toy_data/joint/pca.2540.toe_ids.tsv",
         methy_pcs = rules.pcs.output[0]
     output:
-        "covariates/sex_gpcs_mpcs.tsv", "covariates/sex_gpcs_mpcs.transposed.tsv"
+        "covariates/{vup_method}/cov_gpcs_mpcs.{vup_method}.tsv", "covariates/{vup_method}/cov_gpcs_mpcs.{vup_method}.transposed.tsv"
     threads: 1
     resources:
         mem_mb = mem_step_size
@@ -171,8 +234,8 @@ rule covariates:
         set -euo pipefail
 
         out1=$(echo {output[0]} | rev | cut -f3- -d'.' | rev).tmp
-        head -n1 {input.sample_sheet} | cut -f1,3 -d',' | tr "," "\t" | join --header -t$'\t' <(head -n1 {input.geno_pcs}) /dev/stdin > $out1
-        tail -n+2 {input.sample_sheet} | cut -f1,3 -d',' | tr "," "\t" | awk -F'\t' 'BEGIN{{OFS="\t"}} {{if ($2=="F") {{ $2=1 }} else {{$2=0}}}} {{print}}' | sort -k1,1 | join -t$'\t' <(tail -n+2 {input.geno_pcs} | sort -k1,1) /dev/stdin >> $out1
+        head -n1 {input.extra_cov} | join --header -t$'\t' <(head -n1 {input.geno_pcs}) /dev/stdin > $out1
+        tail -n+2 {input.extra_cov} | sort -k1,1 | join -t$'\t' <(tail -n+2 {input.geno_pcs} | sort -k1,1) /dev/stdin >> $out1
 
         join --header -t$'\t' <(head -n1 $out1) <(head -n1 {input.methy_pcs}) > {output[0]}
         join -t$'\t' <(tail -n+2 $out1) <(tail -n+2 {input.methy_pcs}) >> {output[0]}
@@ -185,7 +248,7 @@ rule methy_pcs_plot:
     input:
         rules.covariates.output[0]
     output:
-        "plots/methy_pcs.png"
+        "plots/{vup_method}/methy_pcs.{vup_method}.png"
     shell:
         """
         Rscript plot-mpcs.R {input} {output}
@@ -217,10 +280,10 @@ rule null_covariates:
         """
         set -euo pipefail
 
-        plink_prefix=$(dirname {input.vcf})/$(basename {input.vcf} .bed)
+        plink_prefix=$(dirname {input.vcf})/$(basename {input.vcf} .bcf)
         diff <(cut -f2 ${{plink_prefix}}.fam) <(tail -n+2 {input.cov} | cut -f1)
 
-        plink_prefix_null=$(dirname {input.vcf_null})/$(basename {input.vcf_null} .bed)
+        plink_prefix_null=$(dirname {input.vcf_null})/$(basename {input.vcf_null} .bcf)
         tmp_dir=covariates_null
         paste <(cut -f2 ${{plink_prefix_null}}.fam) <(tail -n+2 {input.cov} | cut -f 2-11) | sort -k1,1 > $tmp_dir/null_pcs.tsv
         (head -n1 {input.cov}; paste $tmp_dir/null_pcs.tsv <(tail -n+2 {input.cov} | cut -f12-)) > {output[0]}
@@ -235,13 +298,13 @@ chrom_methy_file="bed_files/betas.sorted_samples.invnorm.ids_fixed.samples_filte
 chrom_genotype_file="genotypes/{chrom}.pass_variants.bim"
 
 
-rule permutation_scan_exclude_chunk:
+rule permutation_scan_chunk:
     input:
         genotype_bim_file=chrom_genotype_file,
-        phenotype_bed_file=chrom_methy_file,
-        covariates_file="covariates/sex_gpcs_mpcs.transposed.tsv"
+        phenotype_bed_file=rules.invnorm_vup_adjusted_bed_file.output,
+        covariates_file=rules.covariates.output[1] #"covariates/sex_gpcs_mpcs.transposed.tsv"
     output:
-        "permute_scan/exclude/temp/permute.{chrom}.chunk_{chunk}.mpcs_{mpcs}.cis_qtl.tsv.gz"
+        "permute_scan/{vup_method}/temp/permute.{vup_method}.{chrom}.chunk_{chunk}.mpcs_{mpcs}.cis_qtl.tsv.gz"
     threads: 16
     resources:
         mem_mb = lambda wc, attempt:  mem_step_size + mem_step_size * attempt
@@ -259,14 +322,38 @@ rule permutation_scan_exclude_chunk:
         tmp_prefix=${{tmp_dir}}/$(basename {output} .cis_qtl.tsv.gz)
         tmp_out=${{tmp_prefix}}.cis_qtl.txt.gz
         chunk_bed_file=${{tmp_dir}}/betas.{wildcards.chrom}.{wildcards.chunk}.bed.gz
+        single_probe_bed=${{tmp_dir}}/betas.{wildcards.chrom}.{wildcards.chunk}.single.bed.gz
+        single_cov=${{tmp_dir}}/betas.{wildcards.chrom}.{wildcards.chunk}.single.cov.tsv
         cov_file="$tmp_dir/cov_file.tsv"
-        head -n $(( 12 + {wildcards.mpcs})) {input.covariates_file} > $cov_file
+        head -n $(( 13 + {wildcards.mpcs})) {input.covariates_file} > $cov_file
 
         echo "Subsetting BED file ..." >&2
         (zcat {input.phenotype_bed_file} | head -n1; zcat {input.phenotype_bed_file} | tail -n+2 | tail -n+$(( 1 + {wildcards.chunk} * {config[chunk_size]} )) | head -n{config[chunk_size]}) | bgzip > $chunk_bed_file
 
-        python3 -m tensorqtl $(dirname {input.genotype_bim_file})/$(basename {input.genotype_bim_file} .bim) $chunk_bed_file $tmp_prefix  --mode cis --maf_threshold 0.001 --covariates $cov_file --window 1000000 --qvalue_lambda 0 --seed 2023 --permutations 1000 --invnorm 
-        rc=$?        
+        if [[ "{wildcards.vup_method}" == "filter" || "{wildcards.vup_method}" == "regress" ]]; then
+          python3 -m tensorqtl $(dirname {input.genotype_bim_file})/$(basename {input.genotype_bim_file} .bim) $chunk_bed_file $tmp_prefix  --mode cis --maf_threshold 0.001 --covariates $cov_file --window 1000000 --qvalue_lambda 0 --seed 2023 --permutations 1000 --invnorm
+          rc=$?
+        else # "{wildcards.vup_method}" == "mask"
+          probe_idx_end=$(zcat $chunk_bed_file | wc -l)
+          for probe_idx in `seq 2 $probe_idx_end`; do
+            zcat $chunk_bed_file | transpose_tsv.R | cut -f1,$probe_idx | grep -v NA | transpose_tsv.R | bgzip > $single_probe_bed &&
+            cat $cov_file | transpose_tsv.R | join --header -t $'\t' <(zcat $single_probe_bed | cut -f4- | head -n1 | tr "\t" "\n") /dev/stdin | transpose_tsv.R > $single_cov &&
+            python3 -m tensorqtl $(dirname {input.genotype_bim_file})/$(basename {input.genotype_bim_file} .bim) $single_probe_bed ${{tmp_prefix}}.tmp_${{probe_idx}}  --mode cis --maf_threshold 0.001 --covariates $single_cov --window 1000000 --qvalue_lambda 0 --seed 2023 --permutations 1000 --invnorm
+            rc=$?
+            [[ $rc != 0 ]] && break
+          done
+
+          if [[ $rc == 0 ]]; then
+            for f in `ls -v ${{tmp_prefix}}.tmp_*.cis_qtl.txt.gz`; do
+              if [[ "$f" == "${{tmp_prefix}}.tmp_2.cis_qtl.txt.gz" ]]; then
+                zcat $f
+              else
+                zcat $f | tail -n+2
+              fi
+            done | gzip > $tmp_out
+            rc=$?
+          fi
+        fi
 
         if [[ $rc == 0 && {wildcards.chunk} == 0 ]]; then
           mv $tmp_out {output}
@@ -296,9 +383,9 @@ chrom_genotype_file="genotypes/{chrom}.pass_variants.bim"
 
 rule permutation_scan_exclude:
     input:
-        lambda wc: [rules.permutation_scan_exclude_chunk.output[0].format(chunk=c, chrom=wc.chrom, mpcs=wc.mpcs) for c in range(0, num_chunks_for_chrom(chrom_methy_file.format(chrom=wc.chrom)))]
+        lambda wc: [rules.permutation_scan_chunk.output[0].format(vup_method=wc.vup_method, chunk=c, chrom=wc.chrom, mpcs=wc.mpcs) for c in range(0, num_chunks_for_chrom(rules.invnorm_vup_adjusted_bed_file.output[0].format(chrom=wc.chrom, vup_method=wc.vup_method)))]
     output:
-        "permute_scan/exclude/permute.{chrom}.mpcs_{mpcs}.cis_qtl.tsv.gz"
+        "permute_scan/{vup_method}/permute.{vup_method}.{chrom}.mpcs_{mpcs}.cis_qtl.tsv.gz"
     threads: 2
     resources:
         mem_mb = lambda wc, attempt:  mem_step_size + mem_step_size * attempt

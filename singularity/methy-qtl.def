@@ -7,9 +7,10 @@ From: ubuntu:22.04
 %environment
   export LC_ALL=C
   export TZ=Etc/UTC
+  export PATH="/opt/scripts:$PATH"
 
 %post
-  chmod +x /opt/scripts/*
+  chmod 755 /opt/scripts/*
 
   export TZ=Etc/UTC
   export DEBIAN_FRONTEND=noninteractive
@@ -41,8 +42,8 @@ From: ubuntu:22.04
     libfreetype6-dev libpng-dev libtiff5-dev libjpeg-dev \
     libmagick++-dev
 
-  Rscript --no-save /usr/local/bin/install_packages_or_die.R remotes readr GGally
-  Rscript --no-save /usr/local/bin/install_github_package_or_die.R jdstorey/qvalue qvalue
+  Rscript --no-save /opt/scripts/install_packages_or_die.R remotes readr GGally
+  Rscript --no-save /opt/scripts/install_github_package_or_die.R jdstorey/qvalue qvalue
 
   git clone https://github.com/samtools/htslib /htslib
   cd /htslib
