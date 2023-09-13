@@ -24,7 +24,9 @@ From: ubuntu:22.04
     libfontconfig-dev \
     libfribidi-dev \
     libharfbuzz-dev \
+    liblapack-dev \
     liblzma-dev \
+    libopenblas-dev \
     libncurses5-dev \
     libssl-dev \
     libxml2-dev \
@@ -42,8 +44,18 @@ From: ubuntu:22.04
     libfreetype6-dev libpng-dev libtiff5-dev libjpeg-dev \
     libmagick++-dev
 
-  Rscript --no-save /opt/scripts/install_packages_or_die.R remotes readr GGally
-  Rscript --no-save /opt/scripts/install_github_package_or_die.R jdstorey/qvalue qvalue
+  python3 -m pip install --upgrade pip setuptools wheel
+  python3 -m pip install cget
+
+  git clone https://github.com/statgen/vuptool /vuptool
+  cd /vuptool
+  git checkout 06014f2d6b4a0aaf8e6e595ebce727b8c7bcab6c
+  cget install -f requirements.txt
+  mkdir build
+  cd build
+  cmake -DCMAKE_TOOLCHAIN_FILE=../cget/cget/cget.cmake -DCMAKE_BUILD_TYPE=Release ..
+  make
+  install -T vuptool /usr/local/bin/vuptool
 
   git clone https://github.com/samtools/htslib /htslib
   cd /htslib
@@ -52,8 +64,8 @@ From: ubuntu:22.04
   autoreconf -i
   ./configure
   make
-  install bgzip /usr/local/bin
-  install tabix /usr/local/bin
+  install -T bgzip /usr/local/bin/bgzip
+  install -T tabix /usr/local/bin/tabix
 
   git clone https://github.com/samtools/bcftools /bcftools
   cd /bcftools
@@ -66,10 +78,12 @@ From: ubuntu:22.04
   unzip plink2_linux_x86_64_20230813.zip
   install -T plink2 /usr/local/bin/plink2
 
+  Rscript --no-save /opt/scripts/install_packages_or_die.R remotes readr GGally
+  Rscript --no-save /opt/scripts/install_github_package_or_die.R jdstorey/qvalue qvalue
+
   #git clone https://github.com/broadinstitute/tensorqtl /tensorqtl-git
   #rev=3cdaa828460a9e9eee44ee98ddfbe74f2069cf5e 
 
-  python3 -m pip install --upgrade pip setuptools wheel
   git clone https://github.com/jonathonl/tensorqtl /tensorqtl-git
   rev=b27d8eb5e37d5a04c21340d69101c4d49f8b69d4 #invnorm-after-residualization
   cd /tensorqtl-git
