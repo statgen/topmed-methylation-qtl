@@ -304,7 +304,7 @@ rule permutation_scan_chunk:
         phenotype_bed_file=rules.invnorm_vup_adjusted_bed_file.output,
         covariates_file=rules.covariates.output[1] #"covariates/sex_gpcs_mpcs.transposed.tsv"
     output:
-        "permute_scan/{vup_method}/temp/permute.{vup_method}.{chrom}.chunk_{chunk}.mpcs_{mpcs}.cis_qtl.tsv.gz"
+        "qtl/{scan_type}/{vup_method}/temp/permute.{vup_method}.{chrom}.chunk_{chunk}.mpcs_{mpcs}.{scan_type}_qtl.tsv.gz"
     threads: 16
     resources:
         mem_mb = lambda wc, attempt:  mem_step_size + mem_step_size * attempt
@@ -314,13 +314,12 @@ rule permutation_scan_chunk:
 
         export OMP_NUM_THREADS={threads}
         export MKL_NUM_THREADS={threads}
-        echo "threads: {threads}"
-        env | grep THREADS
+        
         set +e
         set -uo pipefail
         tmp_dir=`mktemp -d`
         tmp_prefix=${{tmp_dir}}/$(basename {output} .cis_qtl.tsv.gz)
-        tmp_out=${{tmp_prefix}}.cis_qtl.txt.gz
+        tmp_out=${{tmp_prefix}}.{wildcards.scan_type}_qtl.txt.gz
         chunk_bed_file=${{tmp_dir}}/betas.{wildcards.chrom}.{wildcards.chunk}.bed.gz
         single_probe_bed=${{tmp_dir}}/betas.{wildcards.chrom}.{wildcards.chunk}.single.bed.gz
         single_cov=${{tmp_dir}}/betas.{wildcards.chrom}.{wildcards.chunk}.single.cov.tsv
@@ -331,8 +330,13 @@ rule permutation_scan_chunk:
         (zcat {input.phenotype_bed_file} | head -n1; zcat {input.phenotype_bed_file} | tail -n+2 | tail -n+$(( 1 + {wildcards.chunk} * {config[chunk_size]} )) | head -n{config[chunk_size]}) | bgzip > $chunk_bed_file
 
         if [[ "{wildcards.vup_method}" == "filter" || "{wildcards.vup_method}" == "regress" ]]; then
-          python3 -m tensorqtl $(dirname {input.genotype_bim_file})/$(basename {input.genotype_bim_file} .bim) $chunk_bed_file $tmp_prefix  --mode cis --maf_threshold 0.001 --covariates $cov_file --window 1000000 --qvalue_lambda 0 --seed 2023 --permutations 1000 --invnorm
+          python3 -m tensorqtl $(dirname {input.genotype_bim_file})/$(basename {input.genotype_bim_file} .bim) $chunk_bed_file $tmp_prefix  --mode {wildcards.scan_type} --maf_threshold 0.001 --covariates $cov_file --window 1000000 --qvalue_lambda 0 --seed 2023 --permutations 1000 --invnorm
           rc=$?
+
+          if [[ $rc == 0 && "{wildcards.scan_type}" == "cis_nominal" ]]; then
+            parquet_to_tsv.py $tmp_prefix.*.parquet | gzip > $tmp_out
+            rc=$?
+          fi
         else # "{wildcards.vup_method}" == "mask"
           probe_idx_end=$(zcat $chunk_bed_file | wc -l)
           for probe_idx in `seq 2 $probe_idx_end`; do
@@ -340,12 +344,18 @@ rule permutation_scan_chunk:
             cat $cov_file | transpose_tsv.R | join --header -t $'\t' <(zcat $single_probe_bed | cut -f4- | head -n1 | tr "\t" "\n") /dev/stdin | transpose_tsv.R > $single_cov &&
             python3 -m tensorqtl $(dirname {input.genotype_bim_file})/$(basename {input.genotype_bim_file} .bim) $single_probe_bed ${{tmp_prefix}}.tmp_${{probe_idx}}  --mode cis --maf_threshold 0.001 --covariates $single_cov --window 1000000 --qvalue_lambda 0 --seed 2023 --permutations 1000 --invnorm
             rc=$?
+
+            if [[ $rc == 0 && "{wildcards.scan_type}" == "cis_nominal" ]]; then
+              parquet_to_tsv.py ${{tmp_prefix}}.tmp_${{probe_idx}}.*.parquet | gzip > ${{tmp_prefix}}.tmp_${{probe_idx}}.cis_nominal_qtl.txt.gz
+              rc=$?
+            fi
+
             [[ $rc != 0 ]] && break
           done
 
           if [[ $rc == 0 ]]; then
-            for f in `ls -v ${{tmp_prefix}}.tmp_*.cis_qtl.txt.gz`; do
-              if [[ "$f" == "${{tmp_prefix}}.tmp_2.cis_qtl.txt.gz" ]]; then
+            for f in `ls -v ${{tmp_prefix}}.tmp_*.{wildcards.scan_type}_qtl.txt.gz`; do
+              if [[ "$f" == "${{tmp_prefix}}.tmp_2.{wildcards.scan_type}_qtl.txt.gz" ]]; then
                 zcat $f
               else
                 zcat $f | tail -n+2
@@ -383,9 +393,9 @@ chrom_genotype_file="genotypes/{chrom}.pass_variants.bim"
 
 rule permutation_scan_exclude:
     input:
-        lambda wc: [rules.permutation_scan_chunk.output[0].format(vup_method=wc.vup_method, chunk=c, chrom=wc.chrom, mpcs=wc.mpcs) for c in range(0, num_chunks_for_chrom(rules.invnorm_vup_adjusted_bed_file.output[0].format(chrom=wc.chrom, vup_method=wc.vup_method)))]
+        lambda wc: [rules.permutation_scan_chunk.output[0].format(scan_type=wc.scan_type, vup_method=wc.vup_method, chunk=c, chrom=wc.chrom, mpcs=wc.mpcs) for c in range(0, num_chunks_for_chrom(rules.invnorm_vup_adjusted_bed_file.output[0].format(chrom=wc.chrom, vup_method=wc.vup_method)))]
     output:
-        "permute_scan/{vup_method}/permute.{vup_method}.{chrom}.mpcs_{mpcs}.cis_qtl.tsv.gz"
+        "qtl/{scan_type}/{vup_method}/permute.{vup_method}.{chrom}.mpcs_{mpcs}.{scan_type}_qtl.tsv.gz"
     threads: 2
     resources:
         mem_mb = lambda wc, attempt:  mem_step_size + mem_step_size * attempt

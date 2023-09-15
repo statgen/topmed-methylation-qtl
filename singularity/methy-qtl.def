@@ -85,7 +85,7 @@ From: ubuntu:22.04
   #rev=3cdaa828460a9e9eee44ee98ddfbe74f2069cf5e 
 
   git clone https://github.com/jonathonl/tensorqtl /tensorqtl-git
-  rev=b27d8eb5e37d5a04c21340d69101c4d49f8b69d4 #invnorm-after-residualization
+  rev=581abd97bbf13eac1454053cb646a47fd7b2da3c #invnorm-after-residualization
   cd /tensorqtl-git
   git checkout $rev
   python3 -m pip install -r install/requirements.txt .
