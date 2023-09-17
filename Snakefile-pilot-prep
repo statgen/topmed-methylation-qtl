@@ -298,14 +298,14 @@ chrom_methy_file="bed_files/betas.sorted_samples.invnorm.ids_fixed.samples_filte
 chrom_genotype_file="genotypes/{chrom}.pass_variants.bim"
 
 
-rule permutation_scan_chunk:
+rule qtl_scan_chunk:
     input:
         genotype_bim_file=chrom_genotype_file,
         phenotype_bed_file=rules.invnorm_vup_adjusted_bed_file.output,
         covariates_file=rules.covariates.output[1] #"covariates/sex_gpcs_mpcs.transposed.tsv"
     output:
         "qtl/{scan_type}/{vup_method}/temp/permute.{vup_method}.{chrom}.chunk_{chunk}.mpcs_{mpcs}.{scan_type}_qtl.tsv.gz"
-    threads: 16
+    threads: 100
     resources:
         mem_mb = lambda wc, attempt:  mem_step_size + mem_step_size * attempt
     shell:
@@ -391,15 +391,60 @@ chrom_methy_file="bed_files/betas.sorted_samples.invnorm.ids_fixed.samples_filte
 chrom_genotype_file="genotypes/{chrom}.pass_variants.bim"
 
 
-rule permutation_scan_exclude:
+rule concatenated_qtl_scan:
     input:
         lambda wc: [rules.permutation_scan_chunk.output[0].format(scan_type=wc.scan_type, vup_method=wc.vup_method, chunk=c, chrom=wc.chrom, mpcs=wc.mpcs) for c in range(0, num_chunks_for_chrom(rules.invnorm_vup_adjusted_bed_file.output[0].format(chrom=wc.chrom, vup_method=wc.vup_method)))]
     output:
-        "qtl/{scan_type}/{vup_method}/permute.{vup_method}.{chrom}.mpcs_{mpcs}.{scan_type}_qtl.tsv.gz"
+        "qtl/{scan_type}/{vup_method}/{concat}/permute.{vup_method}.{chrom}.mpcs_{mpcs}.{scan_type}_qtl.tsv.gz"
     threads: 2
     resources:
         mem_mb = lambda wc, attempt:  mem_step_size + mem_step_size * attempt
     shell:
         """
         cat {input} > {output}
+        """
+
+rule qtl_scan_chrom:
+    input:
+        genotype_bim_file=chrom_genotype_file,
+        phenotype_bed_file=rules.invnorm_vup_adjusted_bed_file.output,
+        covariates_file=rules.covariates.output[1] #"covariates/sex_gpcs_mpcs.transposed.tsv"
+    output:
+        "qtl/{scan_type}/{vup_method}/permute.{vup_method}.{chrom}.mpcs_{mpcs}.{scan_type}_qtl.tsv.gz"
+    threads: 24
+    resources:
+        mem_mb = lambda wc, attempt:  mem_step_size + mem_step_size * attempt
+    shell:
+        """
+        #!/bin/bash
+
+        export OMP_NUM_THREADS={threads}
+        export MKL_NUM_THREADS={threads}
+        
+        set +e
+        set -uo pipefail
+        tmp_dir=`mktemp -d`
+        tmp_prefix=${{tmp_dir}}/$(basename {output} .cis_qtl.tsv.gz)
+        tmp_out=${{tmp_prefix}}.{wildcards.scan_type}_qtl.txt.gz
+        cov_file="$tmp_dir/cov_file.tsv"
+        head -n $(( 13 + {wildcards.mpcs})) {input.covariates_file} > $cov_file
+
+
+        if [[ "{wildcards.vup_method}" == "filter" || "{wildcards.vup_method}" == "regress" ]]; then
+          python3 -m tensorqtl $(dirname {input.genotype_bim_file})/$(basename {input.genotype_bim_file} .bim) {input.phenotype_bed_file} $tmp_prefix  --mode {wildcards.scan_type} --maf_threshold 0.001 --covariates $cov_file --window 1000000 --qvalue_lambda 0 --seed 2023 --permutations 1000 --invnorm
+          rc=$?
+
+          if [[ $rc == 0 && "{wildcards.scan_type}" == "cis_nominal" ]]; then
+            parquet_to_tsv.py $tmp_prefix.*.parquet | gzip > $tmp_out
+            rc=$?
+          fi
+        fi
+
+        if [[ $rc == 0 ]]; then
+          mv $tmp_out {output}
+          rc=$?
+        fi
+
+        rm -r $tmp_dir
+        exit $rc
         """
