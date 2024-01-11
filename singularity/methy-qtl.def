@@ -49,7 +49,7 @@ From: ubuntu:22.04
 
   git clone https://github.com/statgen/vuptool /vuptool
   cd /vuptool
-  git checkout 06014f2d6b4a0aaf8e6e595ebce727b8c7bcab6c
+  git checkout 5e3ed728d0cccccee11d8e2a1840f9d99a38589b
   cget install -f requirements.txt
   mkdir build
   cd build
@@ -74,8 +74,8 @@ From: ubuntu:22.04
   make install
 
   mkdir /plink && cd /plink
-  wget https://s3.amazonaws.com/plink2-assets/alpha4/plink2_linux_x86_64_20230813.zip
-  unzip plink2_linux_x86_64_20230813.zip
+  wget https://s3.amazonaws.com/plink2-assets/plink2_linux_x86_64_20240105.zip
+  unzip plink2_linux_x86_64_20240105.zip
   install -T plink2 /usr/local/bin/plink2
 
   Rscript --no-save /opt/scripts/install_packages_or_die.R remotes readr GGally

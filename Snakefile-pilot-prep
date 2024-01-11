@@ -141,7 +141,8 @@ rule vup_adjusted_bed_file:
         vcf = rules.genotype_subset.output,
         array_manifest = config["array_manifest"]
     output:
-        "bed_files/{vup_method}/betas.{chrom}.{vup_method}.bed.gz"
+        bed="bed_files/{vup_method}/betas.{chrom}.{vup_method}.bed.gz",
+        mim="bed_files/{vup_method}/betas.{chrom}.{vup_method}.missing_indicators.tsv.gz"
     threads: 2
     resources:
         mem_mb = lambda wc, attempt:  mem_step_size + mem_step_size * attempt
@@ -149,16 +150,18 @@ rule vup_adjusted_bed_file:
         """
         set -uo pipefail
         tmp_dir=`mktemp -d`
-        tmp_out=$tmp_dir/$(basename {output})
+        tmp_out=$tmp_dir/$(basename {output.bed})
+        tmp_mim_out=$tmp_dir/$(basename {output.mim})
         
 
-        method=$(echo {wildcards.vup_method} | cut -f1 -d'_') 
-        vuptool -m $method {input.methy} {input.vcf} {input.array_manifest} | bgzip > $tmp_out &&
+        method=$(echo {wildcards.vup_method} | cut -f1 -d'_')
+ 
+        vuptool -m $method -p $tmp_mim_out {input.methy} {input.vcf} {input.array_manifest} | bgzip > $tmp_out &&
         tabix -p bed $tmp_out
         rc=$?
 
         if [[ $rc == 0 ]]; then
-          mv $tmp_out {output} && mv $tmp_out.tbi {output}.tbi
+          mv $tmp_out {output.bed} && mv $tmp_out.tbi {output.bed}.tbi && mv $tmp_mim_out {output.mim}
           rc=$?
         fi
        
@@ -169,7 +172,7 @@ rule vup_adjusted_bed_file:
 
 rule invnorm_vup_adjusted_bed_file:
     input:
-        rules.vup_adjusted_bed_file.output
+        rules.vup_adjusted_bed_file.output.bed
     output:
         "bed_files/{vup_method}/betas.{chrom}.{vup_method}.invnorm.bed.gz"
     threads: 2
@@ -182,7 +185,7 @@ rule invnorm_vup_adjusted_bed_file:
         tmp_out=$tmp_dir/$(basename {output})
 
 
-        invnorm_bed.R {input} | bgzip > $tmp_out &&
+        invnorm_bed.R {input} --mean-impute | bgzip > $tmp_out &&
         tabix -p bed $tmp_out
         rc=$?
 
@@ -408,9 +411,11 @@ rule qtl_scan_chrom:
     input:
         genotype_bim_file=chrom_genotype_file,
         phenotype_bed_file=rules.invnorm_vup_adjusted_bed_file.output,
-        covariates_file=rules.covariates.output[1] #"covariates/sex_gpcs_mpcs.transposed.tsv"
+        covariates_file=rules.covariates.output[1] #"covariates/regress_additive/cov_gpcs_mpcs.regress.transposed.tsv" #rules.covariates.output[1],
+    params:
+        mim_file=rules.vup_adjusted_bed_file.output.mim
     output:
-        "qtl/{scan_type}/{vup_method}/permute.{vup_method}.{chrom}.mpcs_{mpcs}.{scan_type}_qtl.tsv.gz"
+        "qtl/{scan_type}/{vup_method}/qtl_scan.{vup_method}.{chrom}.mpcs_{mpcs}.{scan_type}_qtl.tsv.gz"
     threads: 24
     resources:
         mem_mb = lambda wc, attempt:  mem_step_size + mem_step_size * attempt
@@ -430,8 +435,12 @@ rule qtl_scan_chrom:
         head -n $(( 13 + {wildcards.mpcs})) {input.covariates_file} > $cov_file
 
 
-        if [[ "{wildcards.vup_method}" == "filter" || "{wildcards.vup_method}" == "regress" ]]; then
-          python3 -m tensorqtl $(dirname {input.genotype_bim_file})/$(basename {input.genotype_bim_file} .bim) {input.phenotype_bed_file} $tmp_prefix  --mode {wildcards.scan_type} --maf_threshold 0.001 --covariates $cov_file --window 1000000 --qvalue_lambda 0 --seed 2023 --permutations 1000 --invnorm
+        if [[ "{wildcards.vup_method}" == "filter" || "{wildcards.vup_method}" == "regress" || || "{wildcards.vup_method}" == "mask" ]]; then
+          paired_cov=""
+          if [[ "{wildcards.vup_method}" == "mask" ]]; then
+            paired_cov="--paired_covariate {params.mim_file}"
+          fi
+          python3 -m tensorqtl $(dirname {input.genotype_bim_file})/$(basename {input.genotype_bim_file} .bim) {input.phenotype_bed_file} $tmp_prefix  --mode {wildcards.scan_type} --maf_threshold 0.001 --covariates $cov_file --window 1000000 --qvalue_lambda 0 --seed 2023 --permutations 1000 --invnorm --fdr 0.05 $paired_cov
           rc=$?
 
           if [[ $rc == 0 && "{wildcards.scan_type}" == "cis_nominal" ]]; then
@@ -448,3 +457,46 @@ rule qtl_scan_chrom:
         rm -r $tmp_dir
         exit $rc
         """
+
+
+rule meta_analysis:
+    input:
+        ["ltrc-fix/qtl/cis_nominal/{vup_method}/qtl_scan.{vup_method}.{chrom}.mpcs_20.cis_nominal_qtl.tsv.gz","copd-fix/qtl/cis_nominal/{vup_method}/qtl_scan.{vup_method}.{chrom}.mpcs_20.cis_nominal_qtl.tsv.gz"]
+    output:
+        "meta-fix/ltrc_copd_meta.{vup_method}.{chrom}.tsv.gz"
+    shell:
+        """
+        #!/bin/bash
+        set +e
+        set -uo pipefail
+        tmp_dir=`mktemp -d`
+        input1=$tmp_dir/input1.tsv.gz
+        input2=$tmp_dir/input2.tsv.gz
+
+        zcat {input[0]} | awk -F'\t' '{if(NR>1) {$2=$1"_"$2}; print $2"\t"$4"\t"$7"\t"$8"\t"$9}' | gzip > $input1
+        zcat {input[1]} | awk -F'\t' '{if(NR>1) {$2=$1"_"$2}; print $2"\t"$4"\t"$7"\t"$8"\t"$9}' | gzip > $input2
+
+        (echo SCHEME STDERR
+         echo EFFECT slope
+         echo STDERR slope_se
+         echo FREQ af
+         echo PVAL pval_nominal
+         echo MARKER variant_id
+         echo PROCESS $input1
+         echo PROCESS $input2
+         echo OUTFILE $tmp_dir/meta_results .tsv
+         echo ANALYZE HETEROGENEITY
+         echo QUIT) > $tmp_dir/analysis.metal
+
+         metal $tmp_dir/analysis.metal
+         rc=$?
+         
+         if [[ $rc == 0 ]]; then
+           gzip -cd $tmp_dir/meta_results.tsv > {output} &&
+           cp $tmp_dir/meta_results.tsv.info {output}.info
+           rc=$?
+         fi
+
+         rm -r $tmp_dir
+         exit $rc
+         """
